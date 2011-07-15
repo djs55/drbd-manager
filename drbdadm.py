@@ -114,6 +114,46 @@ class Proc_drbd_test(unittest.TestCase):
         self.failUnless(x["devices"][1]["progress"] - 0.1 < 0.001)
         self.failUnless(x["devices"][1]["finish"] == "8:35:44")
 
+def drbd_conf(config):
+    return [
+        "global {",
+        "  usage-count no;",
+        "}",
+        "common {",
+        "  protocol C;",
+        "}",
+        "resource %s {" % config["uuid"],
+        "  on %s {" % config["hosts"][0]["name"],
+        "    device %s;" % config["hosts"][0]["device"],
+        "    disk %s;" % config["hosts"][0]["disk"],
+        "    address %s;" % config["hosts"][0]["address"],
+        "    flexible-meta-disk %s;" % config["hosts"][0]["md"],
+        "  }",
+        "  on %s {" % config["hosts"][1]["name"],
+        "    device %s;" % config["hosts"][1]["device"],
+        "    disk %s;" % config["hosts"][1]["disk"],
+        "    address %s;" % config["hosts"][1]["address"],
+        "    flexible-meta-disk %s;" % config["hosts"][1]["md"],
+        "  }",
+        "}"
+        ]
+
+class Drbd_conf_test(unittest.TestCase):
+    def testConfigPrint(self):
+        """test the drbd.conf printer"""
+        host = {
+            "name": "name",
+            "device": "/dev/drbd1",
+            "disk": "/dev/tap",
+            "address": "127.0.0.1:8080",
+            "md": "/dev/loop0"
+            }
+        config = {
+            "uuid": "theuuid",
+            "hosts": [ host, host ]
+            }
+        x = drbd_conf(config)
+
 if __name__ == "__main__":
     unittest.main ()
 
