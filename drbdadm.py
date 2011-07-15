@@ -74,6 +74,18 @@ class Proc_drbd_test(unittest.TestCase):
         self.failUnless(x["version"] == "8.0.14")
         self.failUnless(x["devices"][1] == { "cs": "Unconfigured" })
 
+    def testMultipleDevices(self):
+        """Check that multiple devices are parsed correctly"""
+        x = proc_drbd(header + [
+                "\n",
+                " 1: cs:Unconfigured\n",
+                " 2: cs:Connected st:Secondary/Secondary ds:UpToDate/UpToDate C r---\n",
+                "    ns:0 nr:0 dw:0 dr:0 al:0 bm:0 lo:0 pe:0 ua:0 ap:0\n",
+                "	resync: used:0/61 hits:0 misses:0 starving:0 dirty:0 changed:0\n",
+                "	act_log: used:0/127 hits:0 misses:0 starving:0 dirty:0 changed:0\n"
+                ])
+        self.failUnless(len(x["devices"].keys()) == 2)
+        
     def testSynchronised(self):
         """Check that a synchronised mirror parses correctly"""
         x = proc_drbd(header + [
