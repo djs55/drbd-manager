@@ -43,7 +43,50 @@ def run(cmd, task='unknown'):
 
 import tempfile
 def make_sparse_file(size):
-    fd, filename = tempfile.mkstemp()
+    fd, filename = tempfile.mkstemp(suffix='.md')
     os.fdopen(fd).close()
     run(["dd", "if=/dev/zero", "of=%s" % filename, "bs=1", "count=0", "seek=%Ld" % size])
     return filename
+
+def block_device_sector_size(disk):
+    return int(run(["blockdev", "--getss", disk])[0].strip())
+
+def block_device_sectors(disk):
+    return long(run(["blockdev", "--getsize", disk])[0].strip())
+
+import re
+def list_all_ipv4_addresses():
+    results = []
+    for line in run(["/sbin/ifconfig"]):
+        m = re.match('^\s*inet addr:(\S+) ', line)
+        if m:
+            results.append(m.group(1))
+    return results
+
+def replication_ip():
+    # XXX we need to define storage, replication IPs officially somehow
+    return filter(lambda x:x <> "127.0.0.1", list_all_ipv4_addresses())[0]
+
+def used_ports(ip):
+    """Return a list of port numbers currently in-use."""
+    used = []
+    for line in run(["/bin/netstat", "-an"]):
+        m = re.match('^tcp\s+\S+\s+\S+\s+(\S+)\s+', line)
+        if m:
+            endpoint = m.group(1)
+            bits = endpoint.split(':')
+            if bits[0] == ip:
+                used.append(bits[1])
+    return used
+
+def replication_port(ip):
+    """Returns a port number which is currently free. Note someone else
+    may come along and allocate this one for us, so we have to be prepared
+    to retry."""
+    free_port = 7789
+    used = used_ports(ip)
+    while True:
+        if free_port not in used:
+            return free_port
+        free_port = free_port + 1
+

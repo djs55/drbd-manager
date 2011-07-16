@@ -141,6 +141,8 @@ def drbd_conf(config):
 class Drbd_conf_test(unittest.TestCase):
     def testConfigPrint(self):
         """test the drbd.conf printer"""
+        # XXX: later version of drbd support 'floating' arguments: this
+        # matches on IP rather than hostname (probably better for us)
         host = {
             "name": "name",
             "device": "/dev/drbd1",
@@ -153,6 +155,63 @@ class Drbd_conf_test(unittest.TestCase):
             "hosts": [ host, host ]
             }
         x = drbd_conf(config)
+
+import math
+def size_needed_for_md(disk):
+    """Given a particular size of disk which needs replication, compute
+    the minimum size of flex-meta-disk"""
+    # From http://www.drbd.org/users-guide/ch-internals.html
+    bytes_per_sector = util.block_device_sector_size(disk)
+    size = util.block_device_sectors(disk)
+    cs = size / bytes_per_sector
+    ms = math.ceil(float(cs) / (2.0 ** 18)) * 8L + 72L
+    return ms * bytes_per_sector
+
+# TEST: need to test size_needed_for_md
+
+def free_minor_number(drbd):
+    """Returns a DRBD minor number which is currently free. Note someone
+    else may come along and allocate this one for us, so we have to be
+    prepared to retry"""
+    free_minor = 1
+    while True:
+        if free_minor not in drbd["devices"]:
+            # this one is free
+            return free_minor
+        if drbd["devices"][free_minor]["cs"] == "Unconfigured":
+            # we can use a spare unconfigured one
+            return free_minor
+        free_minor = free_minor + 1
+
+# TEST: need to test free_minor_number
+
+# Need to be able to keep retrying since allocation of free minor
+# numbers and free port numbers may race with other activities on
+# the same host.
+
+class Localdevice:
+    def __init__(self, drbd, disk):
+        self.hostname = os.uname()[1]
+        self.minor = free_minor_number(drbd)
+        mdsize = size_needed_for_md(disk)
+        self.md_file = util.make_sparse_file(mdsize)
+        l = losetup.Loop()
+        self.loop = l.add(self.md_file)
+        self.address = util.replication_ip()
+        self.port = util.replication_port(self.address)
+    def __del__(self):
+        # Remove loop device
+        l = losetup.Loop()
+        l.remove(self.loop)
+        # Remove the temporary file
+        os.unlink(self.md_file)
+        
+# TEST: need to test Localdevice
+
+def read_proc_drbd():
+    return proc_drbd(read_file("/proc/drbd"))
+
+
 
 if __name__ == "__main__":
     unittest.main ()
