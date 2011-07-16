@@ -183,7 +183,28 @@ def free_minor_number(drbd):
             return free_minor
         free_minor = free_minor + 1
 
-# TEST: need to test free_minor_number
+class Free_minor_number_test(unittest.TestCase):
+    def testBasecase(self):
+        """If no minors are configured, then 1 is free"""
+        self.failUnless(free_minor_number({"devices": []}) == 1)
+    def testHole(self):
+        """If an early minor is set to 'Unconfigured', use it"""
+        devices = {
+            "1": { "cs": "XXX" },
+            "2": { "cs": "Unconfigured" },
+            "3": { "cs": "XXX" }
+            }
+        self.failUnless(free_minor_number({"devices": devices}) == 2)
+    def testLots(self):
+        """If the 1, 2, 3 are all allocated (but returned out-of-order)
+        then the next one is 4"""
+        devices = {
+            "3": { "cs": "XXX" },
+            "2": { "cs": "XXX" },
+            "1": { "cs": "XXX" }
+            }
+        self.failUnless(free_minor_number({"devices": devices}) == 4
+)
 
 # Need to be able to keep retrying since allocation of free minor
 # numbers and free port numbers may race with other activities on
