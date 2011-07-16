@@ -157,17 +157,17 @@ class Drbd_conf_test(unittest.TestCase):
         x = drbd_conf(config)
 
 import math
-def size_needed_for_md(disk):
+def size_needed_for_md(bytes_per_sector, sectors):
     """Given a particular size of disk which needs replication, compute
     the minimum size of flex-meta-disk"""
     # From http://www.drbd.org/users-guide/ch-internals.html
-    bytes_per_sector = util.block_device_sector_size(disk)
-    size = util.block_device_sectors(disk)
-    cs = size / bytes_per_sector
-    ms = math.ceil(float(cs) / (2.0 ** 18)) * 8L + 72L
+    ms = long(math.ceil(float(sectors) / (2.0 ** 18)) * 8L) + 72L
     return ms * bytes_per_sector
 
-# TEST: need to test size_needed_for_md
+class Size_needed_for_md_test(unittest.TestCase):
+    def testSmall(self):
+        size = size_needed_for_md(512, 8L * 1024L * 1024L * 2L)
+        self.failUnless(size == 299008L)
 
 def free_minor_number(drbd):
     """Returns a DRBD minor number which is currently free. Note someone
@@ -215,7 +215,9 @@ class Localdevice:
     def __init__(self, drbd, disk):
         self.hostname = os.uname()[1]
         self.minor = free_minor_number(drbd)
-        mdsize = size_needed_for_md(disk)
+        bytes_per_sector = util.block_device_sector_size(disk)
+        sectors = util.block_device_sectors(disk)
+        mdsize = size_needed_for_md(bytes_per_sector, sectors)
         self.md_file = util.make_sparse_file(mdsize)
         l = losetup.Loop()
         self.loop = l.add(self.md_file)
