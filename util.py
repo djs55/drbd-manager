@@ -41,6 +41,11 @@ def run(cmd, task='unknown'):
     log("%s: %s" % (task, " ".join(cmd)))
     return result
 
+def run_as_root(cmd, task='unknown'):
+    if os.geteuid() <> 0:
+        cmd = [ "sudo" ] + cmd
+    return run(cmd, task)
+
 import tempfile
 def make_sparse_file(size):
     fd, filename = tempfile.mkstemp(suffix='.md')
@@ -49,10 +54,10 @@ def make_sparse_file(size):
     return filename
 
 def block_device_sector_size(disk):
-    return int(run(["blockdev", "--getss", disk])[0].strip())
+    return int(run_as_root(["blockdev", "--getss", disk])[0].strip())
 
 def block_device_sectors(disk):
-    return long(run(["blockdev", "--getsize", disk])[0].strip())
+    return long(run_as_root(["blockdev", "--getsize", disk])[0].strip())
 
 import re
 def list_all_ipv4_addresses():

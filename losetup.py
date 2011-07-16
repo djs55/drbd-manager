@@ -11,7 +11,7 @@
 # GNU Lesser General Public License for more details.
 #
 
-from util import run
+from util import run, run_as_root
 
 import re
 
@@ -20,7 +20,7 @@ class Loop:
     # [list] returns the currently-assigned loop devices
     def list(self):
         results = {}
-        for line in run(["losetup", "-a"]):
+        for line in run_as_root(["losetup", "-a"]):
             m = re.match('^(\S+):.+\((\S+)\)', line)
             if m:
                 loop = m.group(1)
@@ -29,7 +29,7 @@ class Loop:
         return results
     # [add task path] creates a new loop device for [path] and returns it
     def add(self, path):
-        run(["losetup", "-f", path])
+        run_as_root(["losetup", "-f", path])
         all = self.list()
         for loop in all:
             if all[loop] == path:
@@ -37,7 +37,7 @@ class Loop:
         return None
     # [remove task path] removes the loop device associated with [path]
     def remove(self, loop):
-        run(["losetup", "-d", str(loop)])
+        run_as_root(["losetup", "-d", str(loop)])
 
 import unittest, os, util
 class LoopTest(unittest.TestCase):
