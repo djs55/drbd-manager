@@ -190,18 +190,19 @@ class Free_minor_number_test(unittest.TestCase):
     def testHole(self):
         """If an early minor is set to 'Unconfigured', use it"""
         devices = {
-            "1": { "cs": "XXX" },
-            "2": { "cs": "Unconfigured" },
-            "3": { "cs": "XXX" }
+            1: { "cs": "XXX" },
+            2: { "cs": "Unconfigured" },
+            3: { "cs": "XXX" }
             }
-        self.failUnless(free_minor_number({"devices": devices}) == 2)
+        free = free_minor_number({"devices": devices})
+        self.failUnless(free == 2)
     def testLots(self):
         """If the 1, 2, 3 are all allocated (but returned out-of-order)
         then the next one is 4"""
         devices = {
-            "3": { "cs": "XXX" },
-            "2": { "cs": "XXX" },
-            "1": { "cs": "XXX" }
+            3: { "cs": "XXX" },
+            2: { "cs": "XXX" },
+            1: { "cs": "XXX" }
             }
         self.failUnless(free_minor_number({"devices": devices}) == 4
 )
