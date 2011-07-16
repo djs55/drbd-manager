@@ -211,8 +211,10 @@ class Free_minor_number_test(unittest.TestCase):
 # numbers and free port numbers may race with other activities on
 # the same host.
 
+import util, losetup, os
 class Localdevice:
     def __init__(self, drbd, disk):
+        self.disk = disk
         self.hostname = os.uname()[1]
         self.minor = free_minor_number(drbd)
         bytes_per_sector = util.block_device_sector_size(disk)
@@ -223,14 +225,47 @@ class Localdevice:
         self.loop = l.add(self.md_file)
         self.address = util.replication_ip()
         self.port = util.replication_port(self.address)
+    def get_config(self):
+        return {
+            "name": self.hostname,
+            "device": "/dev/drbd%d" % self.minor,
+            "disk": self.disk,
+            "address": "%s:%d" % (self.address, self.port),
+            "md": self.loop
+            }
     def __del__(self):
         # Remove loop device
         l = losetup.Loop()
         l.remove(self.loop)
         # Remove the temporary file
         os.unlink(self.md_file)
+
+class Localdevice_test(unittest.TestCase):
+    def setUp(self):
+        self.size = 16L * 1024L * 1024L * 1024L
+        self.file = util.make_sparse_file(self.size)
+        self.losetup = losetup.Loop()
+        self.disk = self.losetup.add(self.file)
         
-# TEST: need to test Localdevice
+        self.nloops = len(self.losetup.list())
+    def testCleanup(self):
+        """Verify the destructor cleans up properly"""
+        devices = {
+            1: { "cs": "XXX" },
+            2: { "cs": "Unconfigured" },
+            3: { "cs": "XXX" }
+            }
+        drbd = {
+            "devices": devices
+            }
+        l = Localdevice(drbd, self.disk)
+        l.get_config()
+        del l
+        nloops = len(self.losetup.list())
+        self.failUnless(self.nloops == nloops)
+    def tearDown(self):
+        self.losetup.remove(self.disk)
+        os.unlink(self.file)
 
 def read_proc_drbd():
     return proc_drbd(read_file("/proc/drbd"))
