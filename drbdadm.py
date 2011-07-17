@@ -493,6 +493,9 @@ class Negotiate_test(unittest.TestCase):
     def testSuccess(self):
         """The negotiation should always succeed eventually"""
         self.local.negotiate(self.remote)
+    def testLocalhost(self):
+        """The negotiation should always succeed on localhost"""
+        self.local.negotiate(self.local)
     def tearDown(self):
         self.losetup.remove(self.disk)
         os.unlink(self.file)
