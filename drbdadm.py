@@ -420,17 +420,16 @@ class Receiver:
         self.localdevice = None
     def versionExchange(self, other_version):
         return self.drbd.version()
-    def hostConfigExchange(self, other_config, uuid):
-        self.other_config = other_config
+    def softAllocateResources(self, uuid):
         self.uuid = uuid
         if self.localdevice:
             del self.localdevice
         self.localdevice = Localdevice(self.drbd, self.disk)
         return self.localdevice.get_config()
-    def start(self):
+    def start(self, my_config, other_config):
         drbd_conf = {
             "uuid": self.uuid,
-            "hosts": [ self.localdevice.get_config(), self.other_config ]
+            "hosts": [ my_config, other_config ]
             }        
         self.drbd.start(drbd_conf)
 
@@ -441,30 +440,41 @@ def negotiate(receiver, drbd, disk, uuid):
         log("Versions must match exactly. My version = %s; Their version = %s" % (my_version, their_version))
         raise VersionMismatchError(my_version, their_version)
 
+    drbd_conf = None
     localdevice = None
+    other_config = None # must be regenerated if localdevice changes
     local_service_started = False
     while not local_service_started:
-        if localdevice:
-            del localdevice
-        localdevice = Localdevice(drbd, disk)
-        my_config = localdevice.get_config()
-        other_config = receiver.hostConfigExchange(my_config, uuid)
-        # NB my_config and other_config might conflict with other 3rd party
-        # configurations, or with each other in the localhost case.
-        drbd_conf = {
-            "uuid": uuid,
-            "hosts": [ my_config, other_config ]
-            }
+        while not local_service_started:
+            if localdevice:
+                del localdevice
+            localdevice = Localdevice(drbd, disk)
+            my_config = localdevice.get_config()
+            if not other_config:
+                other_config = receiver.softAllocateResources(uuid)
+            # NB my_config and other_config might conflict with other 3rd party
+            # configurations, or with each other in the localhost case.
+            drbd_conf = {
+                "uuid": uuid,
+                "hosts": [ my_config, other_config ]
+                }
+            try:
+                drbd.start(drbd_conf)
+                local_service_started = True
+            except TransientException, e:
+                # transient failure, retry
+                log("%s: retrying" % str(e))
         try:
-            drbd.start(drbd_conf)
-            local_service_started = True
+            receiver.start(other_config, my_config)
         except TransientException, e:
-            # transient failure, retry
-            log("%s: retrying" % str(e))
-    try:
-        receiver.start()
-    except:
-        raise
+            # this is either bad luck *or* the receiver just clashed with
+            # the transmitter (expected in the localhost case)
+            other_config = receiver.softAllocateResources(uuid)
+            # if we just clashed on localhost, then other_config will now
+            # be disjoint from my_config
+            drbd.stop(drbd_conf)
+            local_service_started = False
+
 
 class Negotiate_test(unittest.TestCase):
     def setUp(self):
