@@ -424,6 +424,12 @@ class Receiver:
             del self.localdevice
         self.localdevice = Localdevice(self.drbd, self.disk)
         return self.localdevice.get_config()
+    def start(self):
+        drbd_conf = {
+            "uuid": self.uuid,
+            "hosts": [ self.localdevice.get_config(), self.other_config ]
+            }        
+        self.drbd.start(drbd_conf)
 
 def negotiate(receiver, drbd, disk, uuid):
     my_version = drbd.version()
@@ -455,6 +461,10 @@ def negotiate(receiver, drbd, disk, uuid):
         except PortInUse, e:
             # transient failure, retry
             log("DRBD port number %d in use: retrying" % e.port)
+    try:
+        receiver.start()
+    except:
+        raise
 
 class Negotiate_test(unittest.TestCase):
     def setUp(self):
