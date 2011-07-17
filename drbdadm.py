@@ -154,6 +154,13 @@ class Drbd_conf_test(unittest.TestCase):
 def get_this_host(config):
     return config["hosts"][0]
 
+def minor_of_config(config):
+    prefix = "/dev/drbd"
+    return int(get_this_host(config)["device"][len(prefix):])
+
+def port_of_config(config):
+    return int(get_this_host(config)["address"].split(":")[1])
+
 import math
 def size_needed_for_md(bytes_per_sector, sectors):
     """Given a particular size of disk which needs replication, compute
@@ -274,10 +281,10 @@ class Drbd:
         except CommandError, e:
             # Device '/dev/drbdN' is configured!
             if e.code <> 0 and e.output[0].endswith("is configured!\n"):
-                raise MinorInUse()
+                raise MinorInUse(minor_of_config(config))
             # /dev/drbd2: Failure: (102) Local address(port) already in use.
             elif e.code <> 0 and e.output[0].endswith("Local address(port) already in use.\n"):
-                raise PortInUse()
+                raise PortInUse(port_of_config(config))
             else:
                 raise
     def start(self, config):
@@ -294,19 +301,15 @@ class Drbd_simulator:
         self.configs = []
     def version(self):
         return self.version_number
-    def _minor_of_config(self, config):
-        prefix = "/dev/drbd"
-        return int(get_this_host(config)["device"][len(prefix):])
     def get_free_minor_number(self):
-        return max([0] + (map(lambda x:self._minor_of_config(x), self.configs))) + 1
-    def _port_of_config(self, config):
-        return int(get_this_host(config)["address"].split(":")[1])
+        return max([0] + (map(lambda x:minor_of_config(x), self.configs))) + 1
     def start(self, config):
-        this_minor = self._minor_of_config(config)
-        this_port = self._port_of_config(config)
+        #print "start self.configs=%s config=%s" % (repr(self.configs), repr(config))
+        this_minor = minor_of_config(config)
+        this_port = port_of_config(config)
         for other_config in self.configs:
-            other_minor = self._minor_of_config(other_config)
-            other_port = self._port_of_config(other_config)
+            other_minor = minor_of_config(other_config)
+            other_port = port_of_config(other_config)
             if other_minor == this_minor:
                 raise MinorInUse(this_minor)
             if other_port == this_port:
@@ -414,23 +417,44 @@ class Receiver:
         self.localdevice = None
     def versionExchange(self, other_version):
         return self.drbd.version()
-    def hostConfigExchange(self, other_config):
+    def hostConfigExchange(self, other_config, uuid):
         self.other_config = other_config
+        self.uuid = uuid
         if self.localdevice:
             del self.localdevice
         self.localdevice = Localdevice(self.drbd, self.disk)
         return self.localdevice.get_config()
 
-def negotiate(receiver, drbd, disk):
+def negotiate(receiver, drbd, disk, uuid):
     my_version = drbd.version()
     their_version = receiver.versionExchange(my_version)
     if my_version <> their_version:
         log("Versions must match exactly. My version = %s; Their version = %s" % (my_version, their_version))
         raise VersionMismatchError(my_version, their_version)
-    localdevice = Localdevice(drbd, disk)
-    my_config = localdevice.get_config
-    other_config = receiver.hostConfigExchange(my_config)
-    
+
+    localdevice = None
+    local_service_started = False
+    while not local_service_started:
+        if localdevice:
+            del localdevice
+        localdevice = Localdevice(drbd, disk)
+        my_config = localdevice.get_config()
+        other_config = receiver.hostConfigExchange(my_config, uuid)
+        # NB my_config and other_config might conflict with other 3rd party
+        # configurations, or with each other in the localhost case.
+        drbd_conf = {
+            "uuid": uuid,
+            "hosts": [ my_config, other_config ]
+            }
+        try:
+            drbd.start(drbd_conf)
+            local_service_started = True
+        except MinorInUse, e:
+            # transient failure, retry
+            log("DRBD minor number %d in use: retrying" % e.minor)
+        except PortInUse, e:
+            # transient failure, retry
+            log("DRBD port number %d in use: retrying" % e.port)
 
 class Negotiate_test(unittest.TestCase):
     def setUp(self):
@@ -444,12 +468,14 @@ class Negotiate_test(unittest.TestCase):
     def mismatch(self):
         self.remote_drbd.version_number = "a"
         self.local_drbd.version_number = "b"
-        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk)
+        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk, "uuid")
     def testVersionMismatch(self):
         self.assertRaises(VersionMismatchError, self.mismatch)
     def testSuccess(self):
         """The negotiation should always succeed eventually"""
-        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk)        
+        self.failUnless(self.remote_drbd.configs == [])
+        self.failUnless(self.local_drbd.configs == [])
+        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk, "uuid")
     def tearDown(self):
         self.losetup.remove(self.disk)
         os.unlink(self.file)
