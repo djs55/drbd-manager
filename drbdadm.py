@@ -408,29 +408,51 @@ class VersionMismatchError(Exception):
         self.their_version = their_version
 
 class Receiver:
-    def __init__(self, drbd):
+    def __init__(self, drbd, disk):
         self.drbd = drbd
+        self.disk = disk
+        self.localdevice = None
     def versionExchange(self, other_version):
         return self.drbd.version()
     def hostConfigExchange(self, other_config):
-        pass
+        self.other_config = other_config
+        if self.localdevice:
+            del self.localdevice
+        self.localdevice = Localdevice(self.drbd, self.disk)
+        return self.localdevice.get_config()
 
-def negotiate(receiver, drbd):
+def negotiate(receiver, drbd, disk):
     my_version = drbd.version()
     their_version = receiver.versionExchange(my_version)
     if my_version <> their_version:
         log("Versions must match exactly. My version = %s; Their version = %s" % (my_version, their_version))
         raise VersionMismatchError(my_version, their_version)
+    localdevice = Localdevice(drbd, disk)
+    my_config = localdevice.get_config
+    other_config = receiver.hostConfigExchange(my_config)
+    
 
 class Negotiate_test(unittest.TestCase):
+    def setUp(self):
+        self.remote_drbd = Drbd_simulator()
+        self.local_drbd = Drbd_simulator()
+        self.size = 16L * 1024L * 1024L * 1024L
+        self.file = util.make_sparse_file(self.size)
+        self.losetup = losetup.Loop()
+        self.disk = self.losetup.add(self.file)
+
     def mismatch(self):
-        remote = Drbd_simulator()
-        remote.version_number = "a"
-        local = Drbd_simulator()
-        local.version_number = "b"
-        negotiate(Receiver(remote), local)
+        self.remote_drbd.version_number = "a"
+        self.local_drbd.version_number = "b"
+        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk)
     def testVersionMismatch(self):
         self.assertRaises(VersionMismatchError, self.mismatch)
+    def testSuccess(self):
+        """The negotiation should always succeed eventually"""
+        negotiate(Receiver(self.remote_drbd, self.disk), self.local_drbd, self.disk)        
+    def tearDown(self):
+        self.losetup.remove(self.disk)
+        os.unlink(self.file)
 
 if __name__ == "__main__":
     unittest.main ()
