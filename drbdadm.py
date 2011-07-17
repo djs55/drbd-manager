@@ -108,6 +108,8 @@ class Proc_drbd_test(unittest.TestCase):
         self.failUnless(x["devices"][1]["finish"] == "8:35:44")
 
 def drbd_conf(config):
+    # XXX: later version of drbd support 'floating' arguments: this
+    # matches on IP rather than hostname (probably better for us)
     return [
         "global {",
         "  usage-count no;",
@@ -131,23 +133,26 @@ def drbd_conf(config):
         "}"
         ]
 
+def make_simple_config(minor, port):
+    host = {
+        "name": "name",
+        "device": "/dev/drbd%d" % minor,
+        "disk": "/dev/tap",
+        "address": "127.0.0.1:%d" % port,
+        "md": "/dev/loop0"
+        }
+    return {
+        "uuid": "theuuid",
+        "hosts": [ host, host ]
+        }
+
 class Drbd_conf_test(unittest.TestCase):
     def testConfigPrint(self):
         """test the drbd.conf printer"""
-        # XXX: later version of drbd support 'floating' arguments: this
-        # matches on IP rather than hostname (probably better for us)
-        host = {
-            "name": "name",
-            "device": "/dev/drbd1",
-            "disk": "/dev/tap",
-            "address": "127.0.0.1:8080",
-            "md": "/dev/loop0"
-            }
-        config = {
-            "uuid": "theuuid",
-            "hosts": [ host, host ]
-            }
-        x = drbd_conf(config)
+        x = drbd_conf(make_simple_config(1, 8080))
+
+def get_this_host(config):
+    return config["hosts"][0]
 
 import math
 def size_needed_for_md(bytes_per_sector, sectors):
@@ -200,31 +205,142 @@ class Free_minor_number_test(unittest.TestCase):
         self.failUnless(free_minor_number({"devices": devices}) == 4
 )
 
+conf_dir = "/var/run/sm/drbd"
+
+class MinorInUse(Exception):
+    """DRBD reports that the requested minor number is in use"""
+    def __init__(self, minor):
+        self.minor = minor
+    def __str__(self):
+        return "MinorInUse(%d)" % self.minor
+
+class PortInUse(Exception):
+    """DRBD reports that the requested port number is in use"""
+    def __init__(self, port):
+        self.port = port
+    def __str__(self):
+        return "PortInUse(%d)" % self.port
 
 class Drbd:
     """Represents the real drbd system"""
-    def read_proc_drbd():
+    def _read_proc_drbd():
         return proc_drbd(util.read_file("/proc/drbd"))
+    def _get_drbdadm_conf(self, config):
+        return conf_dir + "/" + config["uuid"]
+    def _run_drbdadm(self, config, args):
+        util.run(["/sbin/drbdadm", "-c", self._get_drbdadm_conf(config)] + args + [self.config["uuid"]])
+    
+    def __init__(self):
+        self.configs = []
+        self.connected = {}
+        self.allocated_minors = {}
     def version(self):
-        drbd = self.read_proc_drbd()
+        drbd = self._read_proc_drbd()
         return drbd["version"]
     def get_free_minor_number(self):
         return free_minor_number(self.read_proc_drbd())
+    def stop(self, config):
+        if config in self.connected:
+            self._run_drbdadm(config, ["disconnect"])
+            self.connected.remove(config)
+        if config in self.allocated_minors:
+            self._run_drbdadm(config, ["detach"])
+            self.allocated_minors.remove(config)
+        self.configs.remove(config)
+        os.unlink(self._get_drbdadm_conf(config))
+
+    def _start(self, config):
+        self.configs.append(config)
+        os.makedirs(conf_dir)
+        f = open(self._get_drbdadm_conf(config), "w")
+        try:
+            f.write(drbd_conf(config))
+        finally:
+            f.close()
+        try:
+            # Since we expect to occasionally clash over minor numbers we
+            # mustn't use "up" and "down": "up" would fail and then "down"
+            # would bring down someone else's device
+            if config in self.allocated_minors:
+                self.allocated_minors.remove(config)
+            if config in self.connected:
+                self.connected.remove(config)
+            self._run_drbdadm(config, ["create-dm"])
+            self._run_drbdadm(config, ["attach"])
+            self.allocated_minors.append(config)
+            self._run_drbdadm(config, ["syncer"])
+            self._run_drbdadm(config, ["connect"])
+            self.connected.add(config)
+        except CommandError, e:
+            # Device '/dev/drbdN' is configured!
+            if e.code <> 0 and e.output[0].endswith("is configured!\n"):
+                raise MinorInUse()
+            # /dev/drbd2: Failure: (102) Local address(port) already in use.
+            elif e.code <> 0 and e.output[0].endswith("Local address(port) already in use.\n"):
+                raise PortInUse()
+            else:
+                raise
+    def start(self, config):
+        try:
+            self._start(config)
+        except e:
+            self.stop(config)
+            raise
 
 class Drbd_simulator:
     """A simulation of the real drbd system"""
     def __init__(self):
         self.version = "simulator"
-        self.minors = {}
+        self.configs = []
     def version(self):
         return self.version
+    def _minor_of_config(self, config):
+        prefix = "/dev/drbd"
+        return int(get_this_host(config)["device"][len(prefix):])
     def get_free_minor_number(self):
-        return max([0] + self.minors.keys()) + 1
-
-
+        return max([0] + (map(lambda x:self._minor_of_config(x), self.configs))) + 1
+    def _port_of_config(self, config):
+        return int(get_this_host(config)["address"].split(":")[1])
+    def start(self, config):
+        this_minor = self._minor_of_config(config)
+        this_port = self._port_of_config(config)
+        for other_config in self.configs:
+            other_minor = self._minor_of_config(other_config)
+            other_port = self._port_of_config(other_config)
+            if other_minor == this_minor:
+                raise MinorInUse(this_minor)
+            if other_port == this_port:
+                raise PortInUse(this_port)
+        self.configs.append(config)
+    def stop(self, config):
+        # drdbadm down is idempotent
+        if config in self.configs:
+            self.configs.remove(config)
+        
+class Drbd_simulator_test(unittest.TestCase):
+    def setUp(self):
+        self.drbd = Drbd_simulator()
+    def testMinorInUse(self):
+        self.drbd.start(make_simple_config(1, 8080))
+        self.assertRaises(MinorInUse, lambda:self.drbd.start(make_simple_config(1, 8081)))
+    def testPortInUse(self):
+        self.drbd.start(make_simple_config(1, 8080))
+        self.assertRaises(PortInUse, lambda:self.drbd.start(make_simple_config(2, 8080)))
+    def testMultiple(self):
+        for i in range(0, 10):
+            self.drbd.start(make_simple_config(i, 8080 + i))
+            self.failUnless(len(self.drbd.configs) - 1 == i)
+    def testStartStop(self):
+        for j in range(0, 10):
+            for i in range(0, 10):
+                self.drbd.start(make_simple_config(i, 8080 + i))
+                self.failUnless(len(self.drbd.configs) - 1 == i)
+            for i in range(0, 10):
+                self.drbd.stop(make_simple_config(i, 8080 + i))
+                self.failUnless(len(self.drbd.configs) + i + 1 == 10)
 
 import util, losetup, os
-from util import run, log
+from util import run, CommandError, log
 class Localdevice:
     def __init__(self, drbd, disk):
         self.disk = disk
@@ -270,28 +386,6 @@ class Localdevice_test(unittest.TestCase):
     def tearDown(self):
         self.losetup.remove(self.disk)
         os.unlink(self.file)
-
-conf_dir = "/var/run/sm/drbd"
-
-class Drbdadm:
-    def run(self, args):
-        util.run(["/sbin/drbdadm", "-c", self.conf_file] + args + [self.config["uuid"]])
-    def __init__(self, config):
-        self.config = config
-        os.makedirs(conf_dir)
-        self.conf_file = conf_dir + "/" + config["uuid"]
-        f = open(self.conf_file, "w")
-        try:
-            f.write(drbd_conf(config))
-        finally:
-            f.close()
-    def start(self):
-        self.run(["create-md"])
-        self.run(["attach"])
-        self.run(["syncer"])
-        self.run(["connect"])
-    def stop(self):
-        self.run(["down"])
 
 
 # me -> transmitter: talk to receiver
