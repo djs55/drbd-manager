@@ -290,10 +290,10 @@ class Drbd:
 class Drbd_simulator:
     """A simulation of the real drbd system"""
     def __init__(self):
-        self.version = "simulator"
+        self.version_number = "simulator"
         self.configs = []
     def version(self):
-        return self.version
+        return self.version_number
     def _minor_of_config(self, config):
         prefix = "/dev/drbd"
         return int(get_this_host(config)["device"][len(prefix):])
@@ -423,18 +423,14 @@ def negotiate(receiver, drbd):
         raise VersionMismatchError(my_version, their_version)
 
 class Negotiate_test(unittest.TestCase):
+    def mismatch(self):
+        remote = Drbd_simulator()
+        remote.version_number = "a"
+        local = Drbd_simulator()
+        local.version_number = "b"
+        negotiate(Receiver(remote), local)
     def testVersionMismatch(self):
-        class Local_drbd:
-            def version(self):
-                return "a"
-        class Remote_drbd:
-            def version(self):
-                return "b"
-        try:
-            negotiate(Receiver(Remote_drbd()), Local_drbd())
-            self.failUnless(false)
-        except VersionMismatchError, e:
-            pass
+        self.assertRaises(VersionMismatchError, self.mismatch)
 
 if __name__ == "__main__":
     unittest.main ()
