@@ -14,13 +14,6 @@
 import re
 import unittest
 
-def read_file(filename):
-    f = open("/proc/drbd", "r")
-    try:
-        return f.readlines()
-    finally:
-        f.close()
-
 def proc_drbd(lines):
     m = re.match('^version: (\S+)', lines[0])
     if m:
@@ -207,16 +200,36 @@ class Free_minor_number_test(unittest.TestCase):
         self.failUnless(free_minor_number({"devices": devices}) == 4
 )
 
-# Need to be able to keep retrying since allocation of free minor
-# numbers and free port numbers may race with other activities on
-# the same host.
+
+class Drbd:
+    """Represents the real drbd system"""
+    def read_proc_drbd():
+        return proc_drbd(util.read_file("/proc/drbd"))
+    def version(self):
+        drbd = self.read_proc_drbd()
+        return drbd["version"]
+    def get_free_minor_number(self):
+        return free_minor_number(self.read_proc_drbd())
+
+class Drbd_simulator:
+    """A simulation of the real drbd system"""
+    def __init__(self):
+        self.version = "simulator"
+        self.minors = {}
+    def version(self):
+        return self.version
+    def get_free_minor_number(self):
+        return max([0] + self.minors.keys()) + 1
+
+
 
 import util, losetup, os
+from util import run, log
 class Localdevice:
     def __init__(self, drbd, disk):
         self.disk = disk
         self.hostname = os.uname()[1]
-        self.minor = free_minor_number(drbd)
+        self.minor = drbd.get_free_minor_number()
         bytes_per_sector = util.block_device_sector_size(disk)
         sectors = util.block_device_sectors(disk)
         mdsize = size_needed_for_md(bytes_per_sector, sectors)
@@ -249,16 +262,7 @@ class Localdevice_test(unittest.TestCase):
         
         self.nloops = len(self.losetup.list())
     def testCleanup(self):
-        """Verify the destructor cleans up properly"""
-        devices = {
-            1: { "cs": "XXX" },
-            2: { "cs": "Unconfigured" },
-            3: { "cs": "XXX" }
-            }
-        drbd = {
-            "devices": devices
-            }
-        l = Localdevice(drbd, self.disk)
+        l = Localdevice(Drbd_simulator(), self.disk)
         l.get_config()
         del l
         nloops = len(self.losetup.list())
@@ -267,10 +271,76 @@ class Localdevice_test(unittest.TestCase):
         self.losetup.remove(self.disk)
         os.unlink(self.file)
 
-def read_proc_drbd():
-    return proc_drbd(read_file("/proc/drbd"))
+conf_dir = "/var/run/sm/drbd"
+
+class Drbdadm:
+    def run(self, args):
+        util.run(["/sbin/drbdadm", "-c", self.conf_file] + args + [self.config["uuid"]])
+    def __init__(self, config):
+        self.config = config
+        os.makedirs(conf_dir)
+        self.conf_file = conf_dir + "/" + config["uuid"]
+        f = open(self.conf_file, "w")
+        try:
+            f.write(drbd_conf(config))
+        finally:
+            f.close()
+    def start(self):
+        self.run(["create-md"])
+        self.run(["attach"])
+        self.run(["syncer"])
+        self.run(["connect"])
+    def stop(self):
+        self.run(["down"])
 
 
+# me -> transmitter: talk to receiver
+# transmitter -> receiver: versionExchange
+#   fail unless match
+# transmitter -> receiver: hostConfigExchange
+#   ... NB both sides may be on the same host and may have a conflicting
+#       configuration
+# transmitter starts service
+#   if failure goto hostConfigExchange again
+# transmitter -> receiver: start
+#   if failure: transmitter -> receiver: hostConfigExchange
+#               transmitter stops previous service
+#               goto transmitter starts service
+
+
+class VersionMismatchError(Exception):
+    def __init__(self, my_version, their_version):
+        self.my_version = my_version
+        self.their_version = their_version
+
+class Receiver:
+    def __init__(self, drbd):
+        self.drbd = drbd
+    def versionExchange(self, other_version):
+        return self.drbd.version()
+    def hostConfigExchange(self, other_config):
+        pass
+
+def negotiate(receiver, drbd):
+    my_version = drbd.version()
+    their_version = receiver.versionExchange(my_version)
+    if my_version <> their_version:
+        log("Versions must match exactly. My version = %s; Their version = %s" % (my_version, their_version))
+        raise VersionMismatchError(my_version, their_version)
+
+class Negotiate_test(unittest.TestCase):
+    def testVersionMismatch(self):
+        class Local_drbd:
+            def version(self):
+                return "a"
+        class Remote_drbd:
+            def version(self):
+                return "b"
+        try:
+            negotiate(Receiver(Remote_drbd()), Local_drbd())
+            self.failUnless(false)
+        except VersionMismatchError, e:
+            pass
 
 if __name__ == "__main__":
     unittest.main ()

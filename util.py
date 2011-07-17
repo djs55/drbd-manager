@@ -95,3 +95,10 @@ def replication_port(ip):
             return free_port
         free_port = free_port + 1
 
+
+def read_file(filename):
+    f = open(filaname, "r")
+    try:
+        return f.readlines()
+    finally:
+        f.close()
