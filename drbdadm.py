@@ -214,19 +214,22 @@ class Free_minor_number_test(unittest.TestCase):
 
 conf_dir = "/var/run/sm/drbd"
 
-class MinorInUse(Exception):
+class TransientException(Exception):
+    pass
+
+class MinorInUse(TransientException):
     """DRBD reports that the requested minor number is in use"""
     def __init__(self, minor):
         self.minor = minor
     def __str__(self):
-        return "MinorInUse(%d)" % self.minor
+        return "The DRBD device minor number %d is in use" % self.minor
 
-class PortInUse(Exception):
+class PortInUse(TransientException):
     """DRBD reports that the requested port number is in use"""
     def __init__(self, port):
         self.port = port
     def __str__(self):
-        return "PortInUse(%d)" % self.port
+        return "The port number %d is in use" % self.port
 
 class Drbd:
     """Represents the real drbd system"""
@@ -455,12 +458,9 @@ def negotiate(receiver, drbd, disk, uuid):
         try:
             drbd.start(drbd_conf)
             local_service_started = True
-        except MinorInUse, e:
+        except TransientException, e:
             # transient failure, retry
-            log("DRBD minor number %d in use: retrying" % e.minor)
-        except PortInUse, e:
-            # transient failure, retry
-            log("DRBD port number %d in use: retrying" % e.port)
+            log("%s: retrying" % str(e))
     try:
         receiver.start()
     except:
