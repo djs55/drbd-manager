@@ -142,7 +142,7 @@ def make_simple_config(minor, port):
         "md": "/dev/loop0"
         }
     return {
-        "uuid": "theuuid",
+        "uuid": "%d.%d" % (minor, port),
         "hosts": [ host, host ]
         }
 
@@ -249,6 +249,10 @@ class Drbd:
         return drbd["version"]
     def get_free_minor_number(self):
         return free_minor_number(self.read_proc_drbd())
+    def get_replication_ip(self):
+        return util.get_replication_ip()
+    def get_replication_port(self, ip):
+        return util.get_replication_port(ip)
     def stop(self, config):
         if config in self.connected:
             self._run_drbdadm(config, ["disconnect"])
@@ -301,27 +305,32 @@ class Drbd_simulator:
     """A simulation of the real drbd system"""
     def __init__(self):
         self.version_number = "simulator"
-        self.configs = []
+        self.configs = {}
     def version(self):
         return self.version_number
     def get_free_minor_number(self):
-        return max([0] + (map(lambda x:minor_of_config(x), self.configs))) + 1
+        return max([0] + (map(lambda x:minor_of_config(x), self.configs.values()))) + 1
+    def get_replication_ip(self):
+        return "127.0.0.1"
+    def get_replication_port(self, ip):
+        ports = map(lambda x:port_of_config(x), self.configs.values())
+        return max([7788] + ports) + 1
     def start(self, config):
         #print "start self.configs=%s config=%s" % (repr(self.configs), repr(config))
         this_minor = minor_of_config(config)
         this_port = port_of_config(config)
-        for other_config in self.configs:
+        for other_config in self.configs.values():
             other_minor = minor_of_config(other_config)
             other_port = port_of_config(other_config)
             if other_minor == this_minor:
                 raise MinorInUse(this_minor)
             if other_port == this_port:
                 raise PortInUse(this_port)
-        self.configs.append(config)
+        self.configs[config["uuid"]] = config
     def stop(self, config):
         # drdbadm down is idempotent
-        if config in self.configs:
-            self.configs.remove(config)
+        if config["uuid"] in self.configs.keys():
+            del self.configs[config["uuid"]]
         
 class Drbd_simulator_test(unittest.TestCase):
     def setUp(self):
@@ -332,6 +341,11 @@ class Drbd_simulator_test(unittest.TestCase):
     def testPortInUse(self):
         self.drbd.start(make_simple_config(1, 8080))
         self.assertRaises(PortInUse, lambda:self.drbd.start(make_simple_config(2, 8080)))
+    def testGetReplicationPort(self):
+        ip = self.drbd.get_replication_ip()
+        port = self.drbd.get_replication_port(ip)
+        self.drbd.start(make_simple_config(1, port))
+        self.failUnless(self.drbd.get_replication_port(ip) <> port)
     def testMultiple(self):
         for i in range(0, 10):
             self.drbd.start(make_simple_config(i, 8080 + i))
@@ -358,8 +372,8 @@ class Localdevice:
         self.md_file = util.make_sparse_file(mdsize)
         l = losetup.Loop()
         self.loop = l.add(self.md_file)
-        self.address = util.replication_ip()
-        self.port = util.replication_port(self.address)
+        self.address = drbd.get_replication_ip()
+        self.port = drbd.get_replication_port(self.address)
     def get_config(self):
         return {
             "name": self.hostname,
@@ -430,8 +444,17 @@ class Peer:
         drbd_conf = {
             "uuid": self.uuid,
             "hosts": [ my_config, other_config ]
-            }        
+            }
         self.drbd.start(drbd_conf)
+    def stop(self, my_config, other_config):
+        drbd_conf = {
+            "uuid": self.uuid,
+            "hosts": [ my_config, other_config ]
+            }
+        n = len(self.drbd.configs)
+        self.drbd.stop(drbd_conf)
+        nn = len(self.drbd.configs)
+        assert(n - 1 == nn)
     def negotiate(self, receiver):
         my_version = self.drbd.version()
         their_version = receiver.versionExchange(my_version)
@@ -439,39 +462,37 @@ class Peer:
             log("Versions must match exactly. My version = %s; Their version = %s" % (my_version, their_version))
             raise VersionMismatchError(my_version, their_version)
 
-        drbd_conf = None
-        localdevice = None
         other_config = None # must be regenerated if localdevice changes
         local_service_started = False
+        i = 0
         while not local_service_started:
             while not local_service_started:
-                if localdevice:
-                    del localdevice
-                localdevice = Localdevice(self.drbd, self.disk)
-                my_config = localdevice.get_config()
+                i = i + 1
+                log("iteration %d" % i)
+                my_config = self.softAllocateResources()
                 if not other_config:
                     other_config = receiver.softAllocateResources()
                 # NB my_config and other_config might conflict with other 3rd party
                 # configurations, or with each other in the localhost case.
-                drbd_conf = {
-                    "uuid": self.uuid,
-                    "hosts": [ my_config, other_config ]
-                    }
                 try:
-                    self.drbd.start(drbd_conf)
+                    self.start(my_config, other_config)
                     local_service_started = True
                 except TransientException, e:
                     # transient failure, retry
-                    log("%s: retrying" % str(e))
+                    log("local: %s: retrying" % str(e))
+                    raise
+            log("Local service started; signalling remote")
             try:
                 receiver.start(other_config, my_config)
             except TransientException, e:
+                log("remote: %s: reallocating" % str(e))
                 # this is either bad luck *or* the receiver just clashed with
                 # the transmitter (expected in the localhost case)
                 other_config = receiver.softAllocateResources()
+                
                 # if we just clashed on localhost, then other_config will now
                 # be disjoint from my_config
-                self.drbd.stop(drbd_conf)
+                self.stop(my_config, other_config)
                 local_service_started = False
 
 
