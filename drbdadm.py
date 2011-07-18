@@ -15,6 +15,7 @@ import re
 import unittest
 
 def proc_drbd(lines):
+    """Parse [lines] (from /proc/drbd) and return a dictionary"""
     m = re.match('^version: (\S+)', lines[0])
     if m:
         version = m.group(1)
@@ -49,6 +50,7 @@ def proc_drbd(lines):
         "devices": minors
         }
 
+# Example header from /proc/drbd
 header = [ "version: 8.0.14 (api:86/proto:86)\n",
            "GIT-hash: bb447522fc9a87d0069b7e14f0234911ebdab0f7 build by phil@fat-tyre, 2008-11-12 16:40:33\n" ]
 
@@ -108,6 +110,8 @@ class Proc_drbd_test(unittest.TestCase):
         self.failUnless(x["devices"][1]["finish"] == "8:35:44")
 
 def drbd_conf(config):
+    """Given [config] (a dictionary representing a proposed drbd configuration)
+    return the corresponding drbd.conf"""
     # XXX: later version of drbd support 'floating' arguments: this
     # matches on IP rather than hostname (probably better for us)
     return [
@@ -134,6 +138,7 @@ def drbd_conf(config):
         ]
 
 def make_simple_config(minor, port):
+    """Generate a valid-looking drbd.conf given a device [minor] and network [port]"""
     host = {
         "name": "name",
         "device": "/dev/drbd%d" % minor,
@@ -146,20 +151,23 @@ def make_simple_config(minor, port):
         "hosts": [ host, host ]
         }
 
-class Drbd_conf_test(unittest.TestCase):
-    def testConfigPrint(self):
-        """test the drbd.conf printer"""
-        x = drbd_conf(make_simple_config(1, 8080))
-
 def get_this_host(config):
+    """Return the localhost element from a drbd config"""
     return config["hosts"][0]
 
 def minor_of_config(config):
+    """Return the device minor in use on localhost from a drbd config"""
     prefix = "/dev/drbd"
     return int(get_this_host(config)["device"][len(prefix):])
 
 def port_of_config(config):
+    """Return the port in use on localhost from a drbd config"""
     return int(get_this_host(config)["address"].split(":")[1])
+
+class Drbd_conf_test(unittest.TestCase):
+    def testConfigPrint(self):
+        """test the drbd.conf printer"""
+        x = drbd_conf(make_simple_config(1, 8080))
 
 import math
 def size_needed_for_md(bytes_per_sector, sectors):
@@ -171,6 +179,7 @@ def size_needed_for_md(bytes_per_sector, sectors):
 
 class Size_needed_for_md_test(unittest.TestCase):
     def testSmall(self):
+        """Test the metadata disk size calculation"""
         size = size_needed_for_md(512, 8L * 1024L * 1024L * 2L)
         self.failUnless(size == 299008L)
 
@@ -212,9 +221,11 @@ class Free_minor_number_test(unittest.TestCase):
         self.failUnless(free_minor_number({"devices": devices}) == 4
 )
 
+# Where we will store our drbd.conf fragments
 conf_dir = "/var/run/sm/drbd"
 
 class TransientException(Exception):
+    """An exception which should be handled by retrying"""
     pass
 
 class MinorInUse(TransientException):
@@ -336,21 +347,26 @@ class Drbd_simulator_test(unittest.TestCase):
     def setUp(self):
         self.drbd = Drbd_simulator()
     def testMinorInUse(self):
+        """Check the DRBD simulator correctly throws MinorInUse"""
         self.drbd.start(make_simple_config(1, 8080))
         self.assertRaises(MinorInUse, lambda:self.drbd.start(make_simple_config(1, 8081)))
     def testPortInUse(self):
+        """Check the DRBD simulator correctly throws PortInUse"""
         self.drbd.start(make_simple_config(1, 8080))
         self.assertRaises(PortInUse, lambda:self.drbd.start(make_simple_config(2, 8080)))
     def testGetReplicationPort(self):
+        """Check the DRBD simulator correctly allocates replication ports"""
         ip = self.drbd.get_replication_ip()
         port = self.drbd.get_replication_port(ip)
         self.drbd.start(make_simple_config(1, port))
         self.failUnless(self.drbd.get_replication_port(ip) <> port)
     def testMultiple(self):
+        """Check the DRBD simulator allows multiple configurations"""
         for i in range(0, 10):
             self.drbd.start(make_simple_config(i, 8080 + i))
             self.failUnless(len(self.drbd.configs) - 1 == i)
     def testStartStop(self):
+        """Check the DRBD simulator allows multiple configurations to be manipulated separately"""
         for j in range(0, 10):
             for i in range(0, 10):
                 self.drbd.start(make_simple_config(i, 8080 + i))
@@ -362,6 +378,7 @@ class Drbd_simulator_test(unittest.TestCase):
 import util, losetup, os
 from util import run, CommandError, log
 class Localdevice:
+    """Wrapper around local resource allocation/deallocation"""
     def __init__(self, drbd, disk):
         self.disk = disk
         self.hostname = os.uname()[1]
@@ -398,6 +415,7 @@ class Localdevice_test(unittest.TestCase):
         
         self.nloops = len(self.losetup.list())
     def testCleanup(self):
+        """Verify the wrapper will correctly deallocate loop devices"""
         l = Localdevice(Drbd_simulator(), self.disk)
         l.get_config()
         del l
@@ -408,26 +426,13 @@ class Localdevice_test(unittest.TestCase):
         os.unlink(self.file)
 
 
-# me -> transmitter: talk to receiver
-# transmitter -> receiver: versionExchange
-#   fail unless match
-# transmitter -> receiver: hostConfigExchange
-#   ... NB both sides may be on the same host and may have a conflicting
-#       configuration
-# transmitter starts service
-#   if failure goto hostConfigExchange again
-# transmitter -> receiver: start
-#   if failure: transmitter -> receiver: hostConfigExchange
-#               transmitter stops previous service
-#               goto transmitter starts service
-
-
 class VersionMismatchError(Exception):
     def __init__(self, my_version, their_version):
         self.my_version = my_version
         self.their_version = their_version
 
 class Peer:
+    """Two Peers negotiate a DRBD connection"""
     def __init__(self, drbd, disk, uuid):
         self.drbd = drbd
         self.disk = disk
@@ -507,12 +512,13 @@ class Negotiate_test(unittest.TestCase):
         self.local.drbd.version_number = "b"
         self.local.negotiate(self.remote)
     def testVersionMismatch(self):
+        """Check VersionMismatch is thrown when expected"""
         self.assertRaises(VersionMismatchError, self.mismatch)
     def testSuccess(self):
         """The negotiation should always succeed eventually"""
         self.local.negotiate(self.remote)
     def testLocalhost(self):
-        """The negotiation should always succeed on localhost"""
+        """The negotiation should always succeed even on localhost"""
         self.local.negotiate(self.local)
     def tearDown(self):
         self.losetup.remove(self.disk)
