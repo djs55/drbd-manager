@@ -464,11 +464,8 @@ class Peer:
 
         other_config = None # must be regenerated if localdevice changes
         local_service_started = False
-        i = 0
         while not local_service_started:
             while not local_service_started:
-                i = i + 1
-                log("iteration %d" % i)
                 my_config = self.softAllocateResources()
                 if not other_config:
                     other_config = receiver.softAllocateResources()
