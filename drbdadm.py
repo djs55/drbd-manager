@@ -451,6 +451,7 @@ class Peer:
             "hosts": [ my_config, other_config ]
             }
         self.drbd.start(drbd_conf)
+        return "OK"
     def stop(self, my_config, other_config):
         drbd_conf = {
             "uuid": self.uuid,
@@ -460,6 +461,7 @@ class Peer:
         self.drbd.stop(drbd_conf)
         nn = len(self.drbd.configs)
         assert(n - 1 == nn)
+        return "OK"
     def negotiate(self, receiver):
         my_version = self.drbd.version()
         their_version = receiver.versionExchange(my_version)
@@ -496,7 +498,7 @@ class Peer:
                 # be disjoint from my_config
                 self.stop(my_config, other_config)
                 local_service_started = False
-
+        return "OK"
 
 class Negotiate_test(unittest.TestCase):
     def setUp(self):
@@ -520,6 +522,19 @@ class Negotiate_test(unittest.TestCase):
     def testLocalhost(self):
         """The negotiation should always succeed even on localhost"""
         self.local.negotiate(self.local)
+    def testRemote(self):
+        import drbd, xmlrpclib
+        localhost = "127.0.0.1"
+        port = util.replication_port(localhost)
+        s = drbd.Server(localhost, port)
+        s.start()
+        prefix = "http://%s:%d" % (localhost, port)
+        suffix = xmlrpclib.Server(prefix + "/", allow_none=True).make(self.disk, "uuid")
+        remote = xmlrpclib.Server(prefix + suffix, allow_none=True)
+        self.local.negotiate(remote)
+        s.stop()
+        s.join()
+
     def tearDown(self):
         self.losetup.remove(self.disk)
         os.unlink(self.file)

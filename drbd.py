@@ -22,8 +22,8 @@ from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 class Drbd_factory:
     def __init__(self):
         self.x = 0
-    def make(self):
-        peer = drbdadm.Peer(drbdadm.Drbd_simulator(), "/dev/xvda", "uuid")
+    def make(self, disk, uuid):
+        peer = drbdadm.Peer(drbdadm.Drbd_simulator(), disk, uuid)
         uri = "/%d" % self.x
         self.x = self.x + 1
         peers[uri] = peer
@@ -70,14 +70,20 @@ class Server(Thread):
         Thread.__init__(self)
         self.host = host
         self.port = port
+        self.stopped = False
+        self.server = HTTPServer((self.host, self.port), DRBD)
     def run(self):
+        while not(self.stopped):
+            self.server.handle_request()
+        print 'stop received, shutting down server'
+        self.server.socket.close()
+    def stop(self):
+        self.stopped = True
+        x = xmlrpclib.Server("http://%s:%d/" % (self.host, self.port))
         try:
-            server = HTTPServer((self.host, self.port), DRBD)
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print '^C received, shutting down server'
-            server.socket.close()
-
+            x.ping()
+        except:
+            pass
 
 if __name__ == '__main__':
     s = Server('', 8081)
