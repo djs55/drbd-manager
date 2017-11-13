@@ -97,7 +97,7 @@ def replication_port(ip):
 
 
 def read_file(filename):
-    f = open(filaname, "r")
+    f = open(filename, "r")
     try:
         return f.readlines()
     finally:
